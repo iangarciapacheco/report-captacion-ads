@@ -1,0 +1,20 @@
+# ---- SECRETOS (nunca subir) ----
+.env
+*.env.txt
+tokens-*
+
+# ---- DATOS CON NOMBRES REALES (nunca subir) ----
+scratch_*
+report-mp-vsl-REAL.html
+report-mp-vsl-esqueleto.html
+opps*.json
+
+# ---- scripts locales superados por generate.py ----
+analyze.py
+build_report.py
+
+# ---- varios ----
+*.pyc
+__pycache__/
+.DS_Store
+.claude/

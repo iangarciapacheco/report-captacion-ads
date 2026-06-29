@@ -1,0 +1,68 @@
+name: Report Captación Ads (cada 3 días)
+
+on:
+  schedule:
+    - cron: "0 6 */3 * *"     # 06:00 UTC (~08:00 Madrid) los días 1,4,7,... de cada mes
+  workflow_dispatch:           # botón "Run workflow" para lanzarlo a mano
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# evita solapes si una ejecución tarda
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Generar report (META + GHL)
+        env:
+          GHL_TOKEN:          ${{ secrets.GHL_TOKEN }}
+          GHL_LOCATION_ID:    ${{ secrets.GHL_LOCATION_ID }}
+          META_TOKEN:         ${{ secrets.META_TOKEN }}
+          META_AD_ACCOUNT_ID: ${{ secrets.META_AD_ACCOUNT_ID }}
+        run: |
+          python generate.py
+          mkdir -p _site
+          cp index.html _site/index.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy a GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+  notify:
+    needs: build-and-deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Enviar email con el enlace
+        env:
+          GMAIL_USER:         ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_TO:           ${{ secrets.EMAIL_TO }}
+          REPORT_URL:         ${{ needs.build-and-deploy.outputs.page_url }}
+        run: python send_email.py
