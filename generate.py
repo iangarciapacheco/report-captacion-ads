@@ -65,11 +65,13 @@ def meta_get(path, params):
     params = dict(params); params["access_token"] = META_TOKEN
     return http_get(GRAPH + "/" + path + "?" + urllib.parse.urlencode(params))
 
-# ---------- dates (ventana dinámica: últimos 30 días, sin incluir hoy) ----------
+# ---------- dates (ventana dinámica: últimos N días, sin incluir hoy) ----------
+WINDOW_DAYS = int(os.environ.get("WINDOW_DAYS", "30") or "30")
+DD = str(WINDOW_DAYS)                      # para textos ("7 días", "Total 7d"…)
 TODAY = dt.date.today()
-WIN_END_D = TODAY                         # exclusivo (cubre hasta ayer)
-WIN_START_D = TODAY - dt.timedelta(days=30)
-PRV_START_D = TODAY - dt.timedelta(days=60)
+WIN_END_D = TODAY                          # exclusivo (cubre hasta ayer)
+WIN_START_D = TODAY - dt.timedelta(days=WINDOW_DAYS)
+PRV_START_D = TODAY - dt.timedelta(days=2 * WINDOW_DAYS)
 def D(d): return dt.datetime(d.year, d.month, d.day, tzinfo=dt.timezone.utc)
 WIN_A, WIN_B, PRV_A = D(WIN_START_D), D(WIN_END_D), D(PRV_START_D)
 def tr(a, b):  # META time_range JSON {since,until} (until inclusivo => b-1); a,b son datetimes
@@ -134,7 +136,7 @@ prv = [o for o in opps if inwin(o, PRV_A, WIN_A)]
 F, P = funnel(cur), funnel(prv)
 
 # ---------- META ----------
-acct = meta_get("%s/insights" % ACT, {"date_preset": "last_30d", "fields": "spend"})["data"]
+acct = meta_get("%s/insights" % ACT, {"time_range": tr(WIN_A, WIN_B), "fields": "spend"})["data"]
 SPEND = float(acct[0]["spend"]) if acct else 0.0
 acctp = meta_get("%s/insights" % ACT, {"time_range": tr(PRV_A, WIN_A), "fields": "spend"})["data"]
 SPEND_PRV = float(acctp[0]["spend"]) if acctp else 0.0
@@ -142,7 +144,7 @@ SPEND_PRV = float(acctp[0]["spend"]) if acctp else 0.0
 daily = meta_get("%s/insights" % ACT, {"time_range": tr(WIN_A, WIN_B),
                  "time_increment": 1, "fields": "spend,actions", "limit": 100})["data"]
 daily.sort(key=lambda d: d["date_start"])
-ads = meta_get("%s/insights" % ACT, {"date_preset": "last_30d", "level": "ad",
+ads = meta_get("%s/insights" % ACT, {"time_range": tr(WIN_A, WIN_B), "level": "ad",
               "fields": "ad_name,adset_name,spend,frequency,actions", "limit": 200})["data"]
 
 LEADT = {"lead", "offsite_conversion.fb_pixel_lead", "onsite_web_lead"}
@@ -198,9 +200,13 @@ def spend_between(a, b):
         day = dt.date.fromisoformat(d["date_start"])
         if a <= day < b: s += float(d["spend"])
     return s
-bounds = [WIN_END_D - dt.timedelta(days=7 * k) for k in range(4)]  # [end, end-7, end-14, end-21]
+# tamaño de bucket adaptativo: semanal si la ventana es larga, más fino si es corta
+bsize = 7 if WINDOW_DAYS >= 21 else max(1, -(-WINDOW_DAYS // 4))  # ceil(days/4) para ventanas cortas
+nb = max(1, -(-WINDOW_DAYS // bsize))                            # nº de buckets
+bounds = [WIN_END_D - dt.timedelta(days=bsize * k) for k in range(nb)]  # [end, end-bsize, ...]
+segs = [(max(WIN_START_D, bounds[k + 1]) if k + 1 < len(bounds) else WIN_START_D, bounds[k]) for k in range(nb)]
+segs = list(reversed(segs))                                     # de más viejo a más nuevo
 weeks = []
-segs = [(WIN_START_D, bounds[2]), (bounds[2], bounds[1]), (bounds[1], bounds[0]), (bounds[0], WIN_END_D)]
 for a, b in segs:
     A, B = D(a), D(b)
     sub = [o for o in opps if inwin(o, A, B)]
@@ -272,9 +278,9 @@ H.append('<div class="nav-bar"><span class="nav-brand">◆ MIM · N4 · AUTO</sp
          '<a href="#evolucion">Evolución</a><a href="#scoring">Ventas</a></div></div><div class="container">')
 
 H.append('<div class="banner">🔄 <strong>Report automático</strong> · datos reales META + GHL · ventana <strong>' + WLAB +
-         '</strong> (últimos 30 días) · generado ' + GEN_TS + ' · nombres anonimizados.</div>')
+         '</strong> (últimos ' + DD + ' días) · generado ' + GEN_TS + ' · nombres anonimizados.</div>')
 H.append('<div class="hero"><div class="hero-tag">Report · Captación Amazon Ads · VSL→Llamada</div>'
-         '<h1>Embudo Captación Ads</h1><div class="hero-sub">Funnel Lead→Cualif→Agenda→Call→Venta · 30 días (' + WLAB +
+         '<h1>Embudo Captación Ads</h1><div class="hero-sub">Funnel Lead→Cualif→Agenda→Call→Venta · ' + DD + ' días (' + WLAB +
          ') · Ticket medio cohorte ~' + eur(ticket_med) + ' · Canal: META · Formato: Video</div></div>')
 H.append('<div class="legend">Fuente: <span><span class="src src-meta">META</span> gasto</span> '
          '<span><span class="src src-ghl">GHL</span> conteos</span> <span><span class="src src-deriv">DERIV</span> coste=gasto÷conteo</span>'
@@ -292,7 +298,7 @@ def tile(label, val, sub, extra, src):
 big_txt = ("El gran trato del periodo: <strong>" + anon(big.get("name")) + " · " + eur2(float(big.get("monetaryValue") or 0)) +
            "</strong>.") if big else ""
 H.append('<section id="mes"><h2><span class="num">1</span>KPIs del periodo <span class="toggle">cohorte: leads que entraron en la ventana</span></h2>'
-         '<div class="sub">' + WLAB + ' · ventana corrida de 30 días</div><div class="scorecard">' +
+         '<div class="sub">' + WLAB + ' · ventana corrida de ' + DD + ' días</div><div class="scorecard">' +
          tile("Spend", eur2(SPEND), "campaña activa · 3 adsets", "", "META") +
          tile("Leads", str(F["lead"]), 'CPL <span class="%s">%s</span> · obj %d€' % (sem(cpl, T["cpl"]), eur(cpl), T["cpl"]), "green", "GHL") +
          tile("Cualificados", str(F["q"]), 'CPL Q <span class="%s">%s</span> · obj %d€' % (sem(cplq, T["cplq"]), eur(cplq), T["cplq"]), "amber", "GHL") +
@@ -315,7 +321,7 @@ dead = min(weeks, key=lambda w: (w["q"], -w["spend"]))
 H.append('<section id="semana"><h2><span class="num">2</span>Desglose por semana</h2>'
          '<div class="sub">Conteo <span class="src src-ghl">GHL</span> (cohorte por entrada del lead) · spend <span class="src src-meta">META</span> · semáforo vs objetivo</div>'
          '<div class="twrap"><table><thead><tr><th class="ml">Métrica</th>' +
-         "".join('<th>%s</th>' % w["lab"] for w in weeks) + '<th>Total 30d</th></tr></thead><tbody>')
+         "".join('<th>%s</th>' % w["lab"] for w in weeks) + '<th>Total ' + DD + 'd</th></tr></thead><tbody>')
 H.append('<tr><td>Spend <span class="src src-meta">META</span></td>' + "".join('<td>%s</td>' % eur2(w["spend"]) for w in weeks) + '<td><strong>%s</strong></td></tr>' % eur2(SPEND))
 H.append('<tr><td>Leads · CPL</td>' + "".join('<td>%d · <span class="%s">%s</span></td>' % (w["lead"], sem(w["spend"]/w["lead"], T["cpl"]) if w["lead"] else "r", eur(w["spend"]/w["lead"]) if w["lead"] else "—") for w in weeks) + '<td>%d · <span class="%s">%s</span></td></tr>' % (F["lead"], sem(cpl, T["cpl"]), eur(cpl)))
 H.append('<tr><td>Cualificados · CPL Q</td>' + "".join(cost_or(w, "q", T["cplq"]) for w in weeks) + '<td><span class="%s">%s</span> · %dq</td></tr>' % (sem(cplq, T["cplq"]), eur(cplq), F["q"]))
@@ -336,10 +342,10 @@ def delta(c, p, inv=False):
 ds, dsc = delta(SPEND, SPEND_PRV, inv=True); dl, dlc = delta(F["lead"], P["lead"])
 dv, dvc = delta(F["sale"], P["sale"], inv=True); dcac, dcacc = delta(cac or 0, cac_prv or 0)
 dr, drc = delta(roas or 0, roas_prv or 0, inv=True)
-H.append('<section id="corridos"><h2><span class="num">3</span>Visión 30 días vs los 30 previos</h2>'
+H.append('<section id="corridos"><h2><span class="num">3</span>Visión ' + DD + ' días vs los ' + DD + ' previos</h2>'
          '<div class="sub">Actual (' + WLAB + ') vs anterior (' + PRV_START_D.strftime("%d %b") + '–' + (WIN_START_D - dt.timedelta(days=1)).strftime("%d %b") + ') · spend prev ' + eur2(SPEND_PRV) + '</div><div class="scorecard">'
-         '<div class="tile"><div class="tile-label">Spend 30d <span class="src src-meta">META</span></div><div class="tile-value">' + eur2(SPEND) + '</div><div class="tile-sub ' + dsc + '">' + ds + ' vs prev</div></div>'
-         '<div class="tile red"><div class="tile-label">Leads 30d <span class="src src-ghl">GHL</span></div><div class="tile-value">' + str(F["lead"]) + '</div><div class="tile-sub ' + dlc + '">' + dl + ' · ' + str(P["lead"]) + ' prev</div></div>'
+         '<div class="tile"><div class="tile-label">Spend ' + DD + 'd <span class="src src-meta">META</span></div><div class="tile-value">' + eur2(SPEND) + '</div><div class="tile-sub ' + dsc + '">' + ds + ' vs prev</div></div>'
+         '<div class="tile red"><div class="tile-label">Leads ' + DD + 'd <span class="src src-ghl">GHL</span></div><div class="tile-value">' + str(F["lead"]) + '</div><div class="tile-sub ' + dlc + '">' + dl + ' · ' + str(P["lead"]) + ' prev</div></div>'
          '<div class="tile amber"><div class="tile-label">Ventas cohorte <span class="src src-ghl">GHL</span></div><div class="tile-value">' + str(F["sale"]) + '</div><div class="tile-sub ' + dvc + '">' + dv + ' · ' + str(P["sale"]) + ' prev</div></div>'
          '<div class="tile"><div class="tile-label">CAC <span class="src src-deriv">DERIV</span></div><div class="tile-value ' + sem_low(cac, T["cac"]) + '">' + eur(cac) + '</div><div class="tile-sub ' + dcacc + '">' + dcac + ' · ' + eur(cac_prv) + ' prev</div></div>'
          '<div class="tile green"><div class="tile-label">ROAS cohorte <span class="src src-deriv">DERIV</span></div><div class="tile-value g">' + xx(roas) + '</div><div class="tile-sub ' + drc + '">' + dr + ' · ' + xx(roas_prv) + ' prev</div></div>'
@@ -356,7 +362,7 @@ H.append('<section id="accion"><div class="principal"><div class="principal-tag"
          '<div class="principal-impact">→ Subir la cualificación mueve toda la cascada con el mismo gasto</div></div></section>')
 
 # funnel
-H.append('<section id="funnel"><h2><span class="num">4</span>Funnel · cohorte 30 días</h2>'
+H.append('<section id="funnel"><h2><span class="num">4</span>Funnel · cohorte ' + DD + ' días</h2>'
          '<div class="sub">Conteo <span class="src src-ghl">GHL</span> · coste por fase <span class="src src-deriv">DERIV</span> · el peor salto = cuello</div><div class="funnel">'
          '<div class="fstep"><div class="fstep-label">Lead</div><div class="fstep-n">' + str(F["lead"]) + '</div><div class="fstep-cost">CPL ' + eur(cpl) + '</div></div><div class="farrow">→</div>'
          '<div class="fstep cuello"><div class="fstep-label">Cualificado</div><div class="fstep-n">' + str(F["q"]) + '</div><div class="fstep-cost">CPL Q ' + eur(cplq) + '</div><div class="fstep-conv r">' + pct(F["q"], F["lead"]) + '</div><span class="cuello-tag">CUELLO · cualificación</span></div><div class="farrow">→</div>'
@@ -394,7 +400,7 @@ for d in daily:
     wv = won_by_day.get(d["date_start"]); vs = ("%d" % wv[0]) if wv else "0"; cash = eur2(wv[1]) if wv else "—"
     drows += '<tr><td>%s %s</td><td>%s</td><td>%d</td><td class="%s">%s</td><td>%d</td><td>%s</td><td>%s</td></tr>' % (
         day.strftime("%d/%m"), wd, eur2(sp), lc, sem(sp/lc, T["cpl"]) if lc else "", eur(sp/lc) if lc else "—", ml, vs, cash)
-H.append('<section id="diaria"><h2><span class="num">8</span>Tendencia diaria · 30 días</h2>'
+H.append('<section id="diaria"><h2><span class="num">8</span>Tendencia diaria · ' + DD + ' días</h2>'
          '<div class="sub">Barras = Spend <span class="src src-meta">META</span> · línea = Leads GHL/día · ◆ = venta cerrada</div>'
          '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 16px 10px;margin-bottom:14px">' + svg_chart() + '</div>'
          '<div class="twrap"><table><thead><tr><th>Día</th><th>Spend <span class="src src-meta">META</span></th><th>Leads <span class="src src-ghl">GHL</span></th><th>CPL</th><th>Leads píxel <span class="src src-meta">META</span></th><th>Ventas</th><th>Cash</th></tr></thead><tbody>' + drows + '</tbody></table></div></section>')
@@ -406,7 +412,7 @@ for nm, v in adset_rows:
         nm, eur2(v["spend"]), v["ads"], v["leads"], sem(v["spend"]/v["leads"], T["cpl"]) if v["leads"] else "r", eur(v["spend"]/v["leads"]) if v["leads"] else "—")
 H.append('<section id="adsets"><h2><span class="num">10</span>Adsets · spend &amp; captación</h2>'
          '<div class="sub">Spend &amp; leads píxel <span class="src src-meta">META</span> · ordenado por gasto. (Coste post-lead necesita UTM en GHL.)</div>'
-         '<div class="twrap"><table><thead><tr><th>Adset</th><th>Spend 30d</th><th># Anuncios</th><th>Leads píxel</th><th>CPL píxel</th></tr></thead><tbody>' + arows + '</tbody></table></div></section>')
+         '<div class="twrap"><table><thead><tr><th>Adset</th><th>Spend ' + DD + 'd</th><th># Anuncios</th><th>Leads píxel</th><th>CPL píxel</th></tr></thead><tbody>' + arows + '</tbody></table></div></section>')
 
 # anuncios
 crows = ""; maxfreq = 0

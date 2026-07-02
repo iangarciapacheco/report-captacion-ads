@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "0 6 */3 * *"     # 06:00 UTC (~08:00 Madrid) los días 1,4,7,... de cada mes
   workflow_dispatch:           # botón "Run workflow" para lanzarlo a mano
+    inputs:
+      days:
+        description: "Ventana en días (30 por defecto)"
+        required: false
+        default: "30"
 
 permissions:
   contents: read
@@ -36,6 +41,7 @@ jobs:
           GHL_LOCATION_ID:    ${{ secrets.GHL_LOCATION_ID }}
           META_TOKEN:         ${{ secrets.META_TOKEN }}
           META_AD_ACCOUNT_ID: ${{ secrets.META_AD_ACCOUNT_ID }}
+          WINDOW_DAYS:        ${{ github.event.inputs.days || '30' }}
         run: |
           python generate.py
           mkdir -p _site
