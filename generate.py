@@ -8,7 +8,7 @@ Credenciales esperadas (env vars o .env):
   GHL_TOKEN, GHL_LOCATION_ID, META_TOKEN, META_AD_ACCOUNT_ID
 GHL_LOCATION_ID puede venir como 'v2/location/XXXX' o 'XXXX'.
 """
-import os, sys, json, datetime as dt, urllib.parse, urllib.request
+import os, sys, json, time, datetime as dt, urllib.parse, urllib.request
 from collections import defaultdict
 
 GRAPH = "https://graph.facebook.com/v21.0"
@@ -39,27 +39,57 @@ ACT = need("META_AD_ACCOUNT_ID")
 if not ACT.startswith("act_"):
     ACT = "act_" + ACT
 
-# ---------- http ----------
-def http_get(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 report-gen"})
+# ---------- http (con reintentos ante errores transitorios) ----------
+# Meta a veces devuelve HTTP 400 con code 1/2/4/17… ("Service temporarily
+# unavailable", rate-limits, etc.). Antes eso tumbaba todo el informe; ahora
+# se reintenta con backoff (5s, 15s, 45s) y solo falla si persiste.
+_TRANSIENT_CODES = {1, 2, 4, 17, 341, 368, 613}
+_TRANSIENT_SUBCODES = {1504044, 99, 2446079}
+def _is_transient_meta(body):
+    b = body.lower()
+    if any(s in b for s in ("temporarily unavailable", "try again", "rate limit", "please reduce")):
+        return True
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace")[:500]
-        raise SystemExit("HTTP %s en %s\n  -> %s" % (e.code, url.split("access_token=")[0][:120], body))
+        err = json.loads(body).get("error", {})
+        if err.get("code") in _TRANSIENT_CODES or err.get("error_subcode") in _TRANSIENT_SUBCODES:
+            return True
+        if err.get("is_transient"):
+            return True
+    except Exception:
+        pass
+    return False
+
+def _request(url, headers, tries=4):
+    delay = 5
+    for attempt in range(tries):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")
+            retry = e.code in (429, 500, 502, 503) or _is_transient_meta(body)
+            if attempt < tries - 1 and retry:
+                sys.stderr.write("  ↻ transitorio (HTTP %s) — reintento en %ss\n" % (e.code, delay))
+                time.sleep(delay); delay *= 3; continue
+            raise SystemExit("HTTP %s en %s\n  -> %s" % (e.code, url.split("access_token=")[0][:120], body[:400]))
+        except urllib.error.URLError as e:
+            if attempt < tries - 1:
+                sys.stderr.write("  ↻ red (%s) — reintento en %ss\n" % (getattr(e, "reason", e), delay))
+                time.sleep(delay); delay *= 3; continue
+            raise SystemExit("Error de red: %s en %s" % (e, url.split("access_token=")[0][:120]))
+
+_UA = {"User-Agent": "Mozilla/5.0 report-gen"}
+def http_get(url):
+    return _request(url, _UA)
 
 def ghl_get(path, params):
-    params = dict(params)
-    url = GHLAPI + path + "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={
+    url = GHLAPI + path + "?" + urllib.parse.urlencode(dict(params))
+    return _request(url, {
         "Authorization": "Bearer " + GHL_TOKEN,
         "Version": "2021-07-28",
         "Accept": "application/json",
         "User-Agent": "Mozilla/5.0 report-gen",   # GHL WAF bloquea Python-urllib
     })
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read().decode())
 
 def meta_get(path, params):
     params = dict(params); params["access_token"] = META_TOKEN
