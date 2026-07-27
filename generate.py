@@ -152,6 +152,35 @@ def pdt(s): return dt.datetime.fromisoformat(s.replace("Z", "+00:00")) if s else
 def inwin(o, a, b):
     c = pdt(o.get("createdAt")); return c is not None and a <= c < b
 
+# ---------- separación de funnels (VSL vs PLF comparten pipeline) ----------
+# El funnel PLF (5 vídeos → curso PPC) entra por el form "Skill Títulos/Recursos"
+# y se marca con tag form-skill-titulos / landing skill-titulos. Sin aislarlo,
+# su volumen (más leads, menos cualificados) falsearía el CPL Q / CAC del VSL.
+FUNNEL = os.environ.get("FUNNEL", "VSL").upper()       # "VSL" (defecto) o "PLF"
+PLF_TAGS = {"form-skill-titulos", "lead-consultoria-ppc"}
+PLF_URL_HINT = "skill-titulos"
+_ccache = {}
+def _contact(cid):
+    if cid not in _ccache:
+        try: _ccache[cid] = ghl_get("/contacts/" + cid, {}).get("contact", {})
+        except SystemExit: _ccache[cid] = {}
+    return _ccache[cid]
+def is_plf(o):
+    cid = o.get("contactId")
+    if not cid: return False
+    c = _contact(cid)
+    tags = {str(t).strip('"').lower() for t in (c.get("tags") or [])}
+    if PLF_TAGS & tags: return True
+    url = ((c.get("lastAttributionSource") or {}).get("url") or "").lower()
+    return PLF_URL_HINT in url
+def _belongs(o):
+    plf = is_plf(o)
+    return plf if FUNNEL == "PLF" else (not plf)
+# solo clasificamos las opps relevantes (ventana 60d ∪ ganadas) → 1 fetch de contacto por opp usada
+_relevant = [o for o in opps if inwin(o, PRV_A, WIN_B) or is_won(o)]
+opps = [o for o in _relevant if _belongs(o)]
+sys.stderr.write("Funnel=%s · opps relevantes %d → del funnel %d\n" % (FUNNEL, len(_relevant), len(opps)))
+
 def funnel(sub):
     return dict(
         lead=len(sub),
@@ -166,16 +195,29 @@ prv = [o for o in opps if inwin(o, PRV_A, WIN_A)]
 F, P = funnel(cur), funnel(prv)
 
 # ---------- META ----------
-acct = meta_get("%s/insights" % ACT, {"time_range": tr(WIN_A, WIN_B), "fields": "spend"})["data"]
+# Aísla el GASTO al funnel elegido: las campañas del PLF (Recursos/5Videos) viven
+# en la misma cuenta; sin filtrar, su spend se sumaría al del VSL.
+PLF_CAMP_KW = ["recursos", "5videos", "skill", "titulos"]
+_camps = meta_get("%s/insights" % ACT, {"time_range": tr(WIN_A, WIN_B), "level": "campaign",
+                  "fields": "campaign_id,campaign_name", "limit": 200}).get("data", [])
+def _camp_is_plf(nm): return any(k in (nm or "").lower() for k in PLF_CAMP_KW)
+_sel = [c["campaign_id"] for c in _camps
+        if (_camp_is_plf(c["campaign_name"]) if FUNNEL == "PLF" else not _camp_is_plf(c["campaign_name"]))]
+CAMP_FILTER = json.dumps([{"field": "campaign.id", "operator": "IN", "value": _sel}]) if _sel else None
+if not CAMP_FILTER:
+    sys.stderr.write("⚠️ sin campañas para FUNNEL=%s → uso total de cuenta (sin aislar)\n" % FUNNEL)
+def _mf(p): return dict(p, filtering=CAMP_FILTER) if CAMP_FILTER else p
+
+acct = meta_get("%s/insights" % ACT, _mf({"time_range": tr(WIN_A, WIN_B), "fields": "spend"}))["data"]
 SPEND = float(acct[0]["spend"]) if acct else 0.0
-acctp = meta_get("%s/insights" % ACT, {"time_range": tr(PRV_A, WIN_A), "fields": "spend"})["data"]
+acctp = meta_get("%s/insights" % ACT, _mf({"time_range": tr(PRV_A, WIN_A), "fields": "spend"}))["data"]
 SPEND_PRV = float(acctp[0]["spend"]) if acctp else 0.0
 
-daily = meta_get("%s/insights" % ACT, {"time_range": tr(WIN_A, WIN_B),
-                 "time_increment": 1, "fields": "spend,actions", "limit": 100})["data"]
+daily = meta_get("%s/insights" % ACT, _mf({"time_range": tr(WIN_A, WIN_B),
+                 "time_increment": 1, "fields": "spend,actions", "limit": 100}))["data"]
 daily.sort(key=lambda d: d["date_start"])
-ads = meta_get("%s/insights" % ACT, {"time_range": tr(WIN_A, WIN_B), "level": "ad",
-              "fields": "ad_name,adset_name,spend,frequency,actions", "limit": 200})["data"]
+ads = meta_get("%s/insights" % ACT, _mf({"time_range": tr(WIN_A, WIN_B), "level": "ad",
+              "fields": "ad_name,adset_name,spend,frequency,actions", "limit": 200}))["data"]
 
 LEADT = {"lead", "offsite_conversion.fb_pixel_lead", "onsite_web_lead"}
 def leadval(actions):
@@ -309,6 +351,7 @@ H.append('<div class="nav-bar"><span class="nav-brand">◆ MIM · N4 · AUTO</sp
 
 H.append('<div class="banner">🔄 <strong>Report automático</strong> · datos reales META + GHL · ventana <strong>' + WLAB +
          '</strong> (últimos ' + DD + ' días) · generado ' + GEN_TS + ' · nombres anonimizados.</div>')
+H.append('<div class="banner" style="border-style:solid;border-color:var(--blue);background:rgba(59,130,246,.10);color:#9cc2ff">🔀 <strong>Funnel ' + FUNNEL + ' aislado.</strong> Gasto solo de campañas ' + FUNNEL + ' (' + str(len(_sel)) + ' campañas' + ('' if CAMP_FILTER else ' · ⚠️ sin filtro') + ') · leads del pipeline ' + ('con' if FUNNEL == 'PLF' else 'sin') + ' tag <code>form-skill-titulos</code>. El otro funnel se cuenta en su propio report.</div>')
 H.append('<div class="hero"><div class="hero-tag">Report · Captación Amazon Ads · VSL→Llamada</div>'
          '<h1>Embudo Captación Ads</h1><div class="hero-sub">Funnel Lead→Cualif→Agenda→Call→Venta · ' + DD + ' días (' + WLAB +
          ') · Ticket medio cohorte ~' + eur(ticket_med) + ' · Canal: META · Formato: Video</div></div>')
