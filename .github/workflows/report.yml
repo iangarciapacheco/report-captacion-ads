@@ -35,7 +35,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Generar report (META + GHL)
+      - name: Generar reports (VSL + PLF) + portada
         env:
           GHL_TOKEN:          ${{ secrets.GHL_TOKEN }}
           GHL_LOCATION_ID:    ${{ secrets.GHL_LOCATION_ID }}
@@ -43,9 +43,11 @@ jobs:
           META_AD_ACCOUNT_ID: ${{ secrets.META_AD_ACCOUNT_ID }}
           WINDOW_DAYS:        ${{ github.event.inputs.days || '30' }}
         run: |
-          python generate.py
           mkdir -p _site
-          cp index.html _site/index.html
+          FUNNEL=VSL python generate.py && cp index.html _site/vsl.html
+          FUNNEL=PLF python generate.py && cp index.html _site/plf.html
+          cp portada.html            _site/index.html
+          cp carcasa-mp-vsl-ian.html _site/carcasa.html
 
       - uses: actions/configure-pages@v5
 

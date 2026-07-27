@@ -352,8 +352,8 @@ H.append('<div class="nav-bar"><span class="nav-brand">◆ MIM · N4 · AUTO</sp
 H.append('<div class="banner">🔄 <strong>Report automático</strong> · datos reales META + GHL · ventana <strong>' + WLAB +
          '</strong> (últimos ' + DD + ' días) · generado ' + GEN_TS + ' · nombres anonimizados.</div>')
 H.append('<div class="banner" style="border-style:solid;border-color:var(--blue);background:rgba(59,130,246,.10);color:#9cc2ff">🔀 <strong>Funnel ' + FUNNEL + ' aislado.</strong> Gasto solo de campañas ' + FUNNEL + ' (' + str(len(_sel)) + ' campañas' + ('' if CAMP_FILTER else ' · ⚠️ sin filtro') + ') · leads del pipeline ' + ('con' if FUNNEL == 'PLF' else 'sin') + ' tag <code>form-skill-titulos</code>. El otro funnel se cuenta en su propio report.</div>')
-H.append('<div class="hero"><div class="hero-tag">Report · Captación Amazon Ads · VSL→Llamada</div>'
-         '<h1>Embudo Captación Ads</h1><div class="hero-sub">Funnel Lead→Cualif→Agenda→Call→Venta · ' + DD + ' días (' + WLAB +
+H.append('<div class="hero"><div class="hero-tag">Report · Captación Amazon Ads · ' + ('PLF · 5 vídeos → curso PPC' if FUNNEL == 'PLF' else 'VSL → Llamada') + '</div>'
+         '<h1>Embudo Captación Ads · ' + FUNNEL + '</h1><div class="hero-sub">Funnel Lead→Cualif→Agenda→Call→Venta · ' + DD + ' días (' + WLAB +
          ') · Ticket medio cohorte ~' + eur(ticket_med) + ' · Canal: META · Formato: Video</div></div>')
 H.append('<div class="legend">Fuente: <span><span class="src src-meta">META</span> gasto</span> '
          '<span><span class="src src-ghl">GHL</span> conteos</span> <span><span class="src src-deriv">DERIV</span> coste=gasto÷conteo</span>'

@@ -36,23 +36,23 @@ URL  = need("REPORT_URL")
 hoy  = dt.date.today().strftime("%d/%m/%Y")
 
 msg = EmailMessage()
-msg["Subject"] = "📊 Report Captación Ads — %s" % hoy
+msg["Subject"] = "📊 Panel Captación Ads — %s" % hoy
 msg["From"] = USER
 msg["To"] = TO
 msg.set_content(
     "Hola Ian,\n\n"
-    "Tu report de los últimos 30 días (META + GHL) está actualizado.\n\n"
+    "Tu panel de reports está actualizado: Funnel VSL + Funnel PLF (aislados) y la carcasa de referencia.\n\n"
     "👉 Ábrelo aquí: %s\n\n"
-    "Datos reales, nombres anonimizados. Se regenera automáticamente cada 3 días.\n\n"
-    "— Automatización Report Captación Ads\n" % URL
+    "Datos reales META + GHL, nombres anonimizados. Se regenera automáticamente cada 3 días.\n\n"
+    "— Automatización Captación Ads\n" % URL
 )
 # versión HTML con botón (sigue siendo solo el enlace, sin adjuntar el report)
 msg.add_alternative(
     '<div style="font-family:-apple-system,Segoe UI,sans-serif;font-size:15px;color:#1a1a1a">'
     '<p>Hola Ian,</p>'
-    '<p>Tu <strong>report de los últimos 30 días</strong> (META + GHL) está actualizado.</p>'
+    '<p>Tu <strong>panel de reports</strong> está actualizado: Funnel <strong>VSL</strong> + Funnel <strong>PLF</strong> (aislados) y la carcasa de referencia.</p>'
     '<p><a href="%s" style="background:#d4af37;color:#0a0a0a;text-decoration:none;'
-    'padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">Abrir report →</a></p>'
+    'padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">Abrir panel →</a></p>'
     '<p style="color:#666;font-size:13px">O copia el enlace: <a href="%s">%s</a><br>'
     'Datos reales, nombres anonimizados. Se regenera cada 3 días.</p></div>' % (URL, URL, URL),
     subtype="html",

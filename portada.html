@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Panel · Captación Ads · Ian García</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{--bg:#0a0a0a;--surface:#131313;--border:#262626;--text:#ededed;--muted:#8b8b8b;--accent:#d4af37;--accent-soft:rgba(212,175,55,.12);--blue:#3b82f6;--green:#10b981}
+  html,body{font-family:-apple-system,"Segoe UI",Inter,sans-serif;background:var(--bg);color:var(--text);line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:920px;margin:0 auto;padding:56px 24px 80px}
+  .tag{font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--accent);font-weight:700;margin-bottom:8px}
+  h1{font-size:32px;font-weight:700;letter-spacing:-.02em;margin-bottom:6px}
+  .sub{color:var(--muted);font-size:14px;margin-bottom:32px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
+  a.card{display:block;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:22px 22px 20px;transition:border-color .15s,transform .15s}
+  a.card:hover{border-color:var(--accent);transform:translateY(-2px)}
+  .card .ico{font-size:26px;margin-bottom:12px}
+  .card h2{font-size:17px;font-weight:700;margin-bottom:5px;display:flex;align-items:center;gap:8px}
+  .card p{font-size:12.5px;color:var(--muted)}
+  .pill{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;padding:2px 7px;border-radius:6px}
+  .pill.live{background:rgba(16,185,129,.15);color:#4ade80;border:1px solid rgba(16,185,129,.4)}
+  .pill.ref{background:var(--accent-soft);color:var(--accent);border:1px solid rgba(212,175,55,.4)}
+  .arrow{color:var(--accent);font-weight:700;font-size:13px;margin-top:12px;display:inline-block}
+  .foot{margin-top:34px;font-size:12px;color:var(--muted);border-top:1px solid var(--border);padding-top:18px}
+  .foot code{background:var(--surface);padding:1px 6px;border-radius:4px;color:var(--accent);font-size:11px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="tag">◆ MIM · N4 · Panel</div>
+  <h1>Captación Ads — Panel de reports</h1>
+  <div class="sub">Dos funnels sobre el mismo pipeline de GHL, cada uno con su report aislado (gasto + leads separados). Datos reales META + GHL · nombres anonimizados · se regenera cada 3 días.</div>
+
+  <div class="grid">
+    <a class="card" href="vsl.html">
+      <div class="ico">📊</div>
+      <h2>Report VSL <span class="pill live">● en vivo</span></h2>
+      <p>Funnel agencia/mentoría · venta por llamada (Lead→Cualif→Agenda→Call→Venta). Gasto de la campaña <b>COLD_ABO · VSL</b>, leads sin tag PLF.</p>
+      <span class="arrow">Abrir report →</span>
+    </a>
+
+    <a class="card" href="plf.html">
+      <div class="ico">🎬</div>
+      <h2>Report PLF <span class="pill live">● en vivo</span></h2>
+      <p>Funnel 5 vídeos gratis → CTA agendar → curso PPC (más volumen, menos cualificados). Gasto de la campaña <b>Julio · Recursos 5 Vídeos</b>, leads con tag <code style="font-size:11px">form-skill-titulos</code>.</p>
+      <span class="arrow">Abrir report →</span>
+    </a>
+
+    <a class="card" href="carcasa.html">
+      <div class="ico">📐</div>
+      <h2>Carcasa MP·VSL <span class="pill ref">plantilla</span></h2>
+      <p>Tu esqueleto de referencia (estructura MIM, 12 bloques) con <b>datos de ejemplo ficticios</b>. Sirve para revisar la estructura, no para leer números.</p>
+      <span class="arrow">Ver carcasa →</span>
+    </a>
+  </div>
+
+  <div class="foot">
+    🔀 <b>Por qué dos reports:</b> el volumen del PLF (mucho lead, poco cualificado) falsearía el CPL Q / CAC del VSL si se mezclaran. Regla MIM: <b>un report por funnel, con el gasto aislado</b>. · Generado automáticamente vía GitHub Actions.
+  </div>
+</div>
+</body>
+</html>
