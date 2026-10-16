@@ -95,6 +95,30 @@ def meta_get(path, params):
     params = dict(params); params["access_token"] = META_TOKEN
     return http_get(GRAPH + "/" + path + "?" + urllib.parse.urlencode(params))
 
+def ghl_post(path, body):
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(GHLAPI + path, data=data, method="POST", headers={
+        "Authorization": "Bearer " + GHL_TOKEN, "Version": "2021-07-28",
+        "Content-Type": "application/json", "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 report-gen"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        raise SystemExit("HTTP %s en POST %s\n  -> %s" % (e.code, path, e.read().decode("utf-8", "replace")[:300]))
+
+def ghl_contact_ids_by_tag(tag):
+    """IDs de contactos cuyo tag CONTIENE `tag` (1-2 llamadas, en vez de 1 fetch por opp)."""
+    ids = set(); page = 1
+    while True:
+        d = ghl_post("/contacts/search", {"locationId": LOC, "page": page, "pageLimit": 100,
+             "filters": [{"field": "tags", "operator": "contains", "value": tag}]})
+        cs = d.get("contacts", [])
+        ids |= {c["id"] for c in cs}
+        if len(cs) < 100 or page > 20: break
+        page += 1
+    return ids
+
 # ---------- dates (ventana dinámica: últimos N días, sin incluir hoy) ----------
 WINDOW_DAYS = int(os.environ.get("WINDOW_DAYS", "30") or "30")
 DD = str(WINDOW_DAYS)                      # para textos ("7 días", "Total 7d"…)
@@ -152,34 +176,32 @@ def pdt(s): return dt.datetime.fromisoformat(s.replace("Z", "+00:00")) if s else
 def inwin(o, a, b):
     c = pdt(o.get("createdAt")); return c is not None and a <= c < b
 
-# ---------- separación de funnels (VSL vs PLF comparten pipeline) ----------
-# El funnel PLF (5 vídeos → curso PPC) entra por el form "Skill Títulos/Recursos"
-# y se marca con tag form-skill-titulos / landing skill-titulos. Sin aislarlo,
-# su volumen (más leads, menos cualificados) falsearía el CPL Q / CAC del VSL.
-FUNNEL = os.environ.get("FUNNEL", "VSL").upper()       # "VSL" (defecto) o "PLF"
-PLF_TAGS = {"form-skill-titulos", "lead-consultoria-ppc"}
-PLF_URL_HINT = "skill-titulos"
-_ccache = {}
-def _contact(cid):
-    if cid not in _ccache:
-        try: _ccache[cid] = ghl_get("/contacts/" + cid, {}).get("contact", {})
-        except SystemExit: _ccache[cid] = {}
-    return _ccache[cid]
-def is_plf(o):
+# ---------- separación de funnels (VSL · PLF · SURVEY comparten pipeline) ----------
+# Tres funnels en el mismo pipeline de GHL, identificados por tag del contacto:
+#   PLF    → form "Skill Títulos/Recursos" (5 vídeos → curso PPC). Campaña propia en META.
+#   SURVEY → encuesta "playbooks" (landing lzo-...-quiz-playbooks). SIN campaña propia:
+#            el tráfico viene de la campaña VSL → su coste es un REPARTO ESTIMADO del gasto VSL.
+#   VSL    → el resto (agencia, venta por llamada).
+FUNNEL = os.environ.get("FUNNEL", "VSL").upper()       # VSL (defecto) | PLF | SURVEY
+IS_SURVEY = FUNNEL == "SURVEY"
+# Conjuntos de contactId por funnel, vía búsqueda por tag (2-3 llamadas, no 1 por opp).
+PLF_SET = ghl_contact_ids_by_tag("form-skill-titulos") | ghl_contact_ids_by_tag("lead-consultoria-ppc")
+SURVEY_SET = ghl_contact_ids_by_tag("playbook")
+def funnel_of(o):
     cid = o.get("contactId")
-    if not cid: return False
-    c = _contact(cid)
-    tags = {str(t).strip('"').lower() for t in (c.get("tags") or [])}
-    if PLF_TAGS & tags: return True
-    url = ((c.get("lastAttributionSource") or {}).get("url") or "").lower()
-    return PLF_URL_HINT in url
-def _belongs(o):
-    plf = is_plf(o)
-    return plf if FUNNEL == "PLF" else (not plf)
+    if cid in SURVEY_SET: return "SURVEY"
+    if cid in PLF_SET: return "PLF"
+    return "VSL"
+def _belongs(o): return funnel_of(o) == FUNNEL
 # solo clasificamos las opps relevantes (ventana 60d ∪ ganadas) → 1 fetch de contacto por opp usada
 _relevant = [o for o in opps if inwin(o, PRV_A, WIN_B) or is_won(o)]
 opps = [o for o in _relevant if _belongs(o)]
-sys.stderr.write("Funnel=%s · opps relevantes %d → del funnel %d\n" % (FUNNEL, len(_relevant), len(opps)))
+# cuotas de leads por funnel en la ventana actual (para el reparto estimado del SURVEY)
+_cur_counts = defaultdict(int)
+for o in _relevant:
+    if inwin(o, WIN_A, WIN_B): _cur_counts[funnel_of(o)] += 1
+sys.stderr.write("Funnel=%s · opps relevantes %d → del funnel %d · cuotas ventana %s\n"
+                 % (FUNNEL, len(_relevant), len(opps), dict(_cur_counts)))
 
 def funnel(sub):
     return dict(
@@ -195,29 +217,51 @@ prv = [o for o in opps if inwin(o, PRV_A, WIN_A)]
 F, P = funnel(cur), funnel(prv)
 
 # ---------- META ----------
-# Aísla el GASTO al funnel elegido: las campañas del PLF (Recursos/5Videos) viven
-# en la misma cuenta; sin filtrar, su spend se sumaría al del VSL.
+# Aísla el GASTO al funnel elegido. VSL/PLF tienen campaña propia → se filtra por campaign.id.
+# SURVEY no tiene campaña propia (su tráfico viene de la campaña VSL) → su gasto es un
+# REPARTO ESTIMADO del gasto VSL, proporcional a su cuota de leads en la ventana.
 PLF_CAMP_KW = ["recursos", "5videos", "skill", "titulos"]
 _camps = meta_get("%s/insights" % ACT, {"time_range": tr(WIN_A, WIN_B), "level": "campaign",
                   "fields": "campaign_id,campaign_name", "limit": 200}).get("data", [])
 def _camp_is_plf(nm): return any(k in (nm or "").lower() for k in PLF_CAMP_KW)
-_sel = [c["campaign_id"] for c in _camps
-        if (_camp_is_plf(c["campaign_name"]) if FUNNEL == "PLF" else not _camp_is_plf(c["campaign_name"]))]
-CAMP_FILTER = json.dumps([{"field": "campaign.id", "operator": "IN", "value": _sel}]) if _sel else None
-if not CAMP_FILTER:
-    sys.stderr.write("⚠️ sin campañas para FUNNEL=%s → uso total de cuenta (sin aislar)\n" % FUNNEL)
-def _mf(p): return dict(p, filtering=CAMP_FILTER) if CAMP_FILTER else p
+_vsl_ids = [c["campaign_id"] for c in _camps if not _camp_is_plf(c["campaign_name"])]
+_plf_ids = [c["campaign_id"] for c in _camps if _camp_is_plf(c["campaign_name"])]
 
-acct = meta_get("%s/insights" % ACT, _mf({"time_range": tr(WIN_A, WIN_B), "fields": "spend"}))["data"]
-SPEND = float(acct[0]["spend"]) if acct else 0.0
-acctp = meta_get("%s/insights" % ACT, _mf({"time_range": tr(PRV_A, WIN_A), "fields": "spend"}))["data"]
-SPEND_PRV = float(acctp[0]["spend"]) if acctp else 0.0
+def _spend(time_range, ids):
+    if not ids: return 0.0
+    f = json.dumps([{"field": "campaign.id", "operator": "IN", "value": ids}])
+    d = meta_get("%s/insights" % ACT, {"time_range": time_range, "fields": "spend", "filtering": f})["data"]
+    return float(d[0]["spend"]) if d else 0.0
 
-daily = meta_get("%s/insights" % ACT, _mf({"time_range": tr(WIN_A, WIN_B),
-                 "time_increment": 1, "fields": "spend,actions", "limit": 100}))["data"]
-daily.sort(key=lambda d: d["date_start"])
-ads = meta_get("%s/insights" % ACT, _mf({"time_range": tr(WIN_A, WIN_B), "level": "ad",
-              "fields": "ad_name,adset_name,spend,frequency,actions", "limit": 200}))["data"]
+if IS_SURVEY:
+    # reparto estimado: gasto VSL × (leads survey ÷ leads que entran por la campaña VSL)
+    _sv, _vs = _cur_counts.get("SURVEY", 0), _cur_counts.get("VSL", 0)
+    _share = _sv / (_sv + _vs) if (_sv + _vs) else 0.0
+    SPEND = _spend(tr(WIN_A, WIN_B), _vsl_ids) * _share
+    SPEND_PRV = 0.0                      # funnel nuevo: sin histórico en la ventana previa
+    daily, ads = [], []                  # sin detalle de creativo propio (no es atribuible al survey)
+    CAMP_FILTER = None
+    sys.stderr.write("SURVEY · cuota leads %.0f%% → gasto estimado %.2f\n" % (_share * 100, SPEND))
+else:
+    _sel = _plf_ids if FUNNEL == "PLF" else _vsl_ids
+    if not _sel:
+        # el funnel no tiene campañas CON GASTO en la ventana (p.ej. PLF pausado) → gasto 0.
+        # NUNCA caer al total de cuenta (metería gasto de OTROS funnels).
+        sys.stderr.write("FUNNEL=%s sin campañas con gasto en la ventana → spend 0\n" % FUNNEL)
+        SPEND = SPEND_PRV = 0.0
+        daily, ads, CAMP_FILTER = [], [], None
+    else:
+        CAMP_FILTER = json.dumps([{"field": "campaign.id", "operator": "IN", "value": _sel}])
+        def _mf(p): return dict(p, filtering=CAMP_FILTER)
+        acct = meta_get("%s/insights" % ACT, _mf({"time_range": tr(WIN_A, WIN_B), "fields": "spend"}))["data"]
+        SPEND = float(acct[0]["spend"]) if acct else 0.0
+        acctp = meta_get("%s/insights" % ACT, _mf({"time_range": tr(PRV_A, WIN_A), "fields": "spend"}))["data"]
+        SPEND_PRV = float(acctp[0]["spend"]) if acctp else 0.0
+        daily = meta_get("%s/insights" % ACT, _mf({"time_range": tr(WIN_A, WIN_B),
+                         "time_increment": 1, "fields": "spend,actions", "limit": 100}))["data"]
+        daily.sort(key=lambda d: d["date_start"])
+        ads = meta_get("%s/insights" % ACT, _mf({"time_range": tr(WIN_A, WIN_B), "level": "ad",
+                      "fields": "ad_name,adset_name,spend,frequency,actions", "limit": 200}))["data"]
 
 LEADT = {"lead", "offsite_conversion.fb_pixel_lead", "onsite_web_lead"}
 def leadval(actions):
@@ -286,6 +330,11 @@ for a, b in segs:
     f["spend"] = spend_between(a, b)
     f["lab"] = "%s–%s" % (a.strftime("%d/%m"), (b - dt.timedelta(days=1)).strftime("%d/%m"))
     weeks.append(f)
+if IS_SURVEY:
+    # el gasto diario no es atribuible al survey → reparto el gasto estimado por semana
+    # proporcional a los leads de cada semana (CPL estimado constante)
+    _ecpl = SPEND / F["lead"] if F["lead"] else 0.0
+    for w in weeks: w["spend"] = _ecpl * w["lead"]
 
 # ---------- adsets ----------
 adset = defaultdict(lambda: {"spend": 0.0, "leads": 0, "ads": 0})
@@ -351,7 +400,16 @@ H.append('<div class="nav-bar"><span class="nav-brand">◆ MIM · N4 · AUTO</sp
 
 H.append('<div class="banner">🔄 <strong>Report automático</strong> · datos reales META + GHL · ventana <strong>' + WLAB +
          '</strong> (últimos ' + DD + ' días) · generado ' + GEN_TS + ' · nombres anonimizados.</div>')
-H.append('<div class="banner" style="border-style:solid;border-color:var(--blue);background:rgba(59,130,246,.10);color:#9cc2ff">🔀 <strong>Funnel ' + FUNNEL + ' aislado.</strong> Gasto solo de campañas ' + FUNNEL + ' (' + str(len(_sel)) + ' campañas' + ('' if CAMP_FILTER else ' · ⚠️ sin filtro') + ') · leads del pipeline ' + ('con' if FUNNEL == 'PLF' else 'sin') + ' tag <code>form-skill-titulos</code>. El otro funnel se cuenta en su propio report.</div>')
+if IS_SURVEY:
+    _bn = ('🔀 <strong>Funnel SURVEY (encuesta Playbooks) · aislado.</strong> Leads del pipeline con tag <code>playbook</code>. '
+           '⚠️ <strong>Coste ESTIMADO</strong>: el survey no tiene campaña propia en META (su tráfico entra por la campaña VSL), '
+           'así que su gasto es un <strong>reparto del gasto VSL</strong> proporcional a su cuota de leads ('
+           + ('%.0f%%' % (_share * 100)) + ' de los leads VSL+survey de la ventana). Los <strong>conteos son reales de GHL</strong>; los costes, aproximados.')
+else:
+    _bn = ('🔀 <strong>Funnel ' + FUNNEL + ' aislado.</strong> Gasto solo de campañas ' + FUNNEL +
+           ' · leads del pipeline ' + ('con tag <code>form-skill-titulos</code>' if FUNNEL == 'PLF' else 'sin tags de PLF ni Survey') +
+           '. Cada funnel se cuenta en su propio report.')
+H.append('<div class="banner" style="border-style:solid;border-color:var(--blue);background:rgba(59,130,246,.10);color:#9cc2ff">' + _bn + '</div>')
 H.append('<div class="hero"><div class="hero-tag">Report · Captación Amazon Ads · ' + ('PLF · 5 vídeos → curso PPC' if FUNNEL == 'PLF' else 'VSL → Llamada') + '</div>'
          '<h1>Embudo Captación Ads · ' + FUNNEL + '</h1><div class="hero-sub">Funnel Lead→Cualif→Agenda→Call→Venta · ' + DD + ' días (' + WLAB +
          ') · Ticket medio cohorte ~' + eur(ticket_med) + ' · Canal: META · Formato: Video</div></div>')
@@ -385,6 +443,7 @@ H.append('<section id="mes"><h2><span class="num">1</span>KPIs del periodo <span
          str(F["lead"]) + ' leads que entraron, ' + str(F["sale"]) + ' ya compraron (' + eur2(F["rev"]) +
          ', atribuible a este gasto). <strong>Evento</strong> = ' + str(len(won_evt)) + ' tratos cerrados dentro de la ventana (' +
          eur2(cash_evt) + ', incluye leads de meses previos). ' + big_txt + '</div></section>')
+H.append('<!--SURVEY_NOTE-->')
 
 # 2 semana
 def cost_or(f, num, obj):
@@ -457,8 +516,9 @@ H.append('<section id="discrepancia"><h2><span class="num">6</span>Discrepancia 
          '</tbody></table></div><div class="sub" style="margin-top:8px">Factor META/GHL ≈ <strong>%.1f×</strong>. ⚠️ Sin UTM por anuncio en GHL, el coste por etapa <em>por anuncio</em> no es atribuible.</div></section>' % factor)
 
 # plan
-exp = max(adset_rows, key=lambda x: (x[1]["spend"]/x[1]["leads"]) if x[1]["leads"] else 9e9)
-best = min([a for a in adset_rows if a[1]["leads"]], key=lambda x: x[1]["spend"]/x[1]["leads"]) if any(v["leads"] for _, v in adset_rows) else adset_rows[0]
+_dummy = ("—", {"spend": 0, "leads": 0})
+exp = max(adset_rows, key=lambda x: (x[1]["spend"]/x[1]["leads"]) if x[1]["leads"] else 9e9) if adset_rows else _dummy
+best = (min([a for a in adset_rows if a[1]["leads"]], key=lambda x: x[1]["spend"]/x[1]["leads"]) if any(v["leads"] for _, v in adset_rows) else (adset_rows[0] if adset_rows else _dummy))
 H.append('<section id="plan"><h2><span class="num">7</span>Plan de acción</h2><div class="sub">Reglas: cualificación &lt;55% → revisar entrada · frecuencia &gt;2,1 → renovar · escalar ±20%/día máx</div>')
 H.append('<div class="rec p0"><div class="rec-prio">P0 · URGENTE</div><div class="rec-title">Auditar la cualificación de entrada (' + acc_q + ')</div><div class="rec-body">La mitad del gasto se va en leads que no pasan el filtro. Revisa segmentación y promesa del creativo del adset que trae esos leads.</div></div>')
 H.append('<div class="rec p1"><div class="rec-prio">P1 · ESTA SEMANA</div><div class="rec-title">Revisar <code>' + exp[0] + '</code> · CPL píxel ' + (eur(exp[1]["spend"]/exp[1]["leads"]) if exp[1]["leads"] else "—") + '</div><div class="rec-body">' + eur2(exp[1]["spend"]) + ' con ' + str(exp[1]["leads"]) + ' leads de píxel: el adset menos eficiente en captación. Renovar creativo o recortar presupuesto.</div></div>')
@@ -530,6 +590,32 @@ H.append('<section id="scoring"><h2><span class="num">13</span>Ventas cerradas (
 H.append('<div class="banner" style="margin-top:30px">📌 Report automático. Ajusta los <em>objetivos</em> de CPL/CAC a tu negocio (dict <code>T</code> en generate.py) y añade UTMs por anuncio en GHL para atribuir coste por etapa a cada creativo.</div>')
 H.append('</div></body></html>')
 
+html = "".join(H)
+if IS_SURVEY:
+    # el survey no tiene creativos/píxel propios → quito las secciones no atribuibles
+    import re
+    for sid in ("discrepancia", "plan", "diaria", "adsets", "creativos"):
+        html = re.sub(r'<section id="%s".*?</section>' % sid, '', html, flags=re.S)
+        html = re.sub(r'<a href="#%s">.*?</a>' % sid, '', html)
+    # nota metodológica del coste estimado, justo tras los KPIs
+    _note = ('<div class="sub" style="margin:4px 0 24px;border-left:3px solid var(--blue);padding-left:12px">'
+             'ℹ️ <strong>Cómo se calcula el coste (estimado).</strong> El survey no tiene campaña propia en META: '
+             'su tráfico entra por la campaña VSL. Reparto el gasto de la campaña VSL proporcional a su cuota de leads, '
+             'así que CPL/CPL&nbsp;Q/C·Agenda/C·Call/CAC son <strong>aproximados</strong>. Los conteos del funnel '
+             '(leads, cualificados, agendas, calls, ventas) sí son exactos de GHL. Para coste exacto, el survey necesitaría su propia campaña.</div>')
+    html = html.replace('<!--SURVEY_NOTE-->', _note)
+else:
+    # en VSL, avisar si parte de los leads de la campaña VSL se van ahora al Survey
+    _sv = _cur_counts.get("SURVEY", 0)
+    if FUNNEL == "VSL" and _sv:
+        _tot = _sv + _cur_counts.get("VSL", 0)
+        _vnote = ('<div class="sub" style="margin:4px 0 24px;border-left:3px solid var(--blue);padding-left:12px">'
+                  'ℹ️ <strong>%d%% de los leads de la campaña VSL</strong> se van ahora al funnel <strong>Survey</strong> (report aparte). '
+                  'Aquí el CPL usa el <strong>gasto total de la campaña</strong> (lectura conservadora); al Survey se le imputa su parte estimada.</div>'
+                  % round(_sv / _tot * 100))
+        html = html.replace('<!--SURVEY_NOTE-->', _vnote)
+    else:
+        html = html.replace('<!--SURVEY_NOTE-->', '')
 out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
-open(out, "w").write("".join(H))
+open(out, "w").write(html)
 print("OK index.html  spend=%.2f leads=%d q=%d call=%d sale=%d roas=%s" % (SPEND, F["lead"], F["q"], F["call"], F["sale"], xx(roas)))

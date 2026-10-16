@@ -44,8 +44,9 @@ jobs:
           WINDOW_DAYS:        ${{ github.event.inputs.days || '30' }}
         run: |
           mkdir -p _site
-          FUNNEL=VSL python generate.py && cp index.html _site/vsl.html
-          FUNNEL=PLF python generate.py && cp index.html _site/plf.html
+          FUNNEL=VSL    python generate.py && cp index.html _site/vsl.html
+          FUNNEL=PLF    python generate.py && cp index.html _site/plf.html
+          FUNNEL=SURVEY python generate.py && cp index.html _site/survey.html
           cp portada.html            _site/index.html
           cp carcasa-mp-vsl-ian.html _site/carcasa.html
 

@@ -41,7 +41,7 @@ msg["From"] = USER
 msg["To"] = TO
 msg.set_content(
     "Hola Ian,\n\n"
-    "Tu panel de reports está actualizado: Funnel VSL + Funnel PLF (aislados) y la carcasa de referencia.\n\n"
+    "Tu panel de reports está actualizado: Funnels VSL + PLF + Survey (aislados) y la carcasa de referencia.\n\n"
     "👉 Ábrelo aquí: %s\n\n"
     "Datos reales META + GHL, nombres anonimizados. Se regenera automáticamente cada 3 días.\n\n"
     "— Automatización Captación Ads\n" % URL
@@ -50,7 +50,7 @@ msg.set_content(
 msg.add_alternative(
     '<div style="font-family:-apple-system,Segoe UI,sans-serif;font-size:15px;color:#1a1a1a">'
     '<p>Hola Ian,</p>'
-    '<p>Tu <strong>panel de reports</strong> está actualizado: Funnel <strong>VSL</strong> + Funnel <strong>PLF</strong> (aislados) y la carcasa de referencia.</p>'
+    '<p>Tu <strong>panel de reports</strong> está actualizado: Funnels <strong>VSL</strong> + <strong>PLF</strong> + <strong>Survey</strong> (aislados) y la carcasa de referencia.</p>'
     '<p><a href="%s" style="background:#d4af37;color:#0a0a0a;text-decoration:none;'
     'padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">Abrir panel →</a></p>'
     '<p style="color:#666;font-size:13px">O copia el enlace: <a href="%s">%s</a><br>'
