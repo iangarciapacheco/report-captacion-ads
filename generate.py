@@ -153,6 +153,9 @@ for s in stages:
 Q_POS  = idx_of("contact", 2)
 AG_POS = idx_of("agendad", 6)
 CALL_POS = idx_of("realizada", 8)
+# etapa exacta "Contactado" (para el speed-to-lead)
+CONT_ID = next((s["id"] for s in stages if s["name"].strip().lower() == "contactado"), None)
+STL_FIELD_ID = "L1sRC5lB7ndPVEbcD7Q9"   # campo opportunity 'Speed Contactado At' (lo rellena el workflow de GHL)
 
 def pos(o): return POS.get(o.get("pipelineStageId"), -1)
 def is_won(o): return o.get("status") == "won" or o.get("pipelineStageId") == WON_NAME
@@ -215,6 +218,32 @@ def funnel(sub):
 cur = [o for o in opps if inwin(o, WIN_A, WIN_B)]
 prv = [o for o in opps if inwin(o, PRV_A, WIN_A)]
 F, P = funnel(cur), funnel(prv)
+
+# ---------- SPEED-TO-LEAD (registro → Contactado) ----------
+def _parse_cf_date(v):
+    if v is None or v == "": return None
+    s = str(v)
+    try: return pdt(s if "T" in s else s + "T00:00:00Z")
+    except Exception: pass
+    try:  # epoch (ms o s)
+        n = float(s); n = n / 1000 if n > 1e11 else n
+        return dt.datetime.fromtimestamp(n, dt.timezone.utc)
+    except Exception: return None
+def contactado_at(o):
+    for c in (o.get("customFields") or []):            # 1) hora exacta del workflow (si existe)
+        if c.get("id") == STL_FIELD_ID:
+            d = _parse_cf_date(c.get("fieldValue"))
+            if d: return d, "exacto"
+    if CONT_ID and o.get("pipelineStageId") == CONT_ID:  # 2) fallback: aún en Contactado
+        d = pdt(o.get("lastStageChangeAt"))
+        if d: return d, "parcial"
+    return None, None
+_stl = []     # (minutos, fuente)
+for o in cur:
+    ca, src = contactado_at(o); cr = pdt(o.get("createdAt"))
+    if ca and cr and ca >= cr: _stl.append(((ca - cr).total_seconds() / 60.0, src))
+_stl_min = sorted(m for m, _ in _stl)
+_stl_exact = sum(1 for _, s in _stl if s == "exacto")
 
 # ---------- META (gasto aislado por funnel, a NIVEL DE ANUNCIO) ----------
 # Cada anuncio pertenece a un funnel por su nombre/campaña:
@@ -374,7 +403,7 @@ H.append('<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name=
          '<title>Report Captación Ads · ' + WLAB + '</title>' + CSS + '</head><body>')
 H.append('<div class="nav-bar"><span class="nav-brand">◆ MIM · N4 · AUTO</span><div class="nav-links">'
          '<a href="#mes">KPIs</a><a href="#semana">Semana</a><a href="#corridos">vs prev</a><a href="#accion">★ Acción</a>'
-         '<a href="#funnel">Funnel</a><a href="#discrepancia">Meta vs GHL</a><a href="#plan">Plan</a>'
+         '<a href="#funnel">Funnel</a><a href="#speed">Speed-Lead</a><a href="#discrepancia">Meta vs GHL</a><a href="#plan">Plan</a>'
          '<a href="#diaria">Diaria</a><a href="#adsets">Adsets</a><a href="#creativos">Anuncios</a>'
          '<a href="#evolucion">Evolución</a><a href="#scoring">Ventas</a></div></div><div class="container">')
 
@@ -481,6 +510,33 @@ H.append('<section id="funnel"><h2><span class="num">4</span>Funnel · cohorte '
          '<div class="fstep"><div class="fstep-label">Agenda</div><div class="fstep-n">' + str(F["ag"]) + '</div><div class="fstep-cost">C/Agenda ' + eur(cag) + '</div><div class="fstep-conv g">' + pct(F["ag"], F["q"]) + '</div></div><div class="farrow">→</div>'
          '<div class="fstep"><div class="fstep-label">Call</div><div class="fstep-n">' + str(F["call"]) + '</div><div class="fstep-cost">C/Call ' + eur(ccall) + '</div><div class="fstep-conv g">' + pct(F["call"], F["ag"]) + '</div></div><div class="farrow">→</div>'
          '<div class="fstep"><div class="fstep-label">Venta</div><div class="fstep-n">' + str(F["sale"]) + '</div><div class="fstep-cost">CAC ' + eur(cac) + '</div><div class="fstep-conv a">' + pct(F["sale"], F["call"]) + '</div></div></div></section>')
+
+# speed-to-lead (registro → Contactado)
+def _dur(m):
+    if m is None: return "—"
+    if m < 1: return "<1 min"
+    if m < 90: return "%.0f min" % m
+    if m < 2880: return ("%.1f h" % (m / 60)).replace(".", ",")
+    return ("%.1f días" % (m / 1440)).replace(".", ",")
+if _stl_min:
+    import statistics as _st
+    _med = _st.median(_stl_min); _avg = sum(_stl_min) / len(_stl_min)
+    _b5 = sum(1 for m in _stl_min if m <= 5); _b60 = sum(1 for m in _stl_min if m <= 60)
+    _b24 = sum(1 for m in _stl_min if m <= 1440); _bslow = sum(1 for m in _stl_min if m > 1440)
+    _scol = "g" if _med <= 60 else ("a" if _med <= 1440 else "r")
+    _cov = ("%d exactos + %d parciales" % (_stl_exact, len(_stl_min) - _stl_exact)) if _stl_exact else ("%d (parcial)" % len(_stl_min))
+    H.append('<section id="speed"><h2><span class="num">5</span>Speed-to-Lead · registro → Contactado</h2>'
+             '<div class="sub">Tiempo desde que el lead entra (registro) hasta que pasa a <strong>Contactado</strong> <span class="src src-ghl">GHL</span> · objetivo: contactar en &lt; 1 h</div>'
+             '<div class="scorecard">'
+             '<div class="tile ' + ("green" if _scol == "g" else ("amber" if _scol == "a" else "red")) + '"><div class="tile-label">Mediana</div><div class="tile-value ' + _scol + '">' + _dur(_med) + '</div><div class="tile-sub">objetivo &lt; 1 h</div></div>'
+             '<div class="tile"><div class="tile-label">Media</div><div class="tile-value">' + _dur(_avg) + '</div><div class="tile-sub">' + _dur(_stl_min[0]) + ' – ' + _dur(_stl_min[-1]) + '</div></div>'
+             '<div class="tile green"><div class="tile-label">≤ 5 min 🔥</div><div class="tile-value g">' + str(_b5) + '</div><div class="tile-sub">contacto inmediato</div></div>'
+             '<div class="tile green"><div class="tile-label">≤ 1 h</div><div class="tile-value">' + str(_b60) + '</div><div class="tile-sub">de ' + str(len(_stl_min)) + ' medidos</div></div>'
+             '<div class="tile red"><div class="tile-label">&gt; 24 h 🐌</div><div class="tile-value r">' + str(_bslow) + '</div><div class="tile-sub">lead frío</div></div>'
+             '</div>'
+             '<div class="sub" style="margin-top:8px">Medidos: <strong>' + _cov + '</strong> de ' + str(F["lead"]) + ' leads. '
+             + ('⚠️ <strong>Parcial</strong>: sin el workflow de GHL solo puedo medir los leads que siguen en <em>Contactado</em> (los que ya avanzaron perdieron la hora). Activa la automatización <code>Speed Contactado At</code> y pasará a ser exacto para todos.' if _stl_exact == 0 else 'Los <em>exactos</em> salen del campo que rellena tu workflow de GHL.') +
+             '</div></section>')
 
 # discrepancia
 disc = ""
