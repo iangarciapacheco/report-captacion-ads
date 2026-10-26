@@ -11,7 +11,7 @@ on:
         default: "30"
 
 permissions:
-  contents: read
+  contents: write          # para persistir speed_history.json
   pages: write
   id-token: write
 
@@ -49,6 +49,18 @@ jobs:
           FUNNEL=SURVEY python generate.py && cp index.html _site/survey.html
           cp portada.html            _site/index.html
           cp carcasa-mp-vsl-ian.html _site/carcasa.html
+
+      - name: Persistir histórico speed-to-lead
+        run: |
+          if [ -n "$(git status --porcelain speed_history.json)" ]; then
+            git config user.email "actions@users.noreply.github.com"
+            git config user.name "github-actions[bot]"
+            git add speed_history.json
+            git commit -m "speed_history: horas de contactado [skip ci]"
+            git push
+          else
+            echo "speed_history sin cambios"
+          fi
 
       - uses: actions/configure-pages@v5
 

@@ -155,7 +155,6 @@ AG_POS = idx_of("agendad", 6)
 CALL_POS = idx_of("realizada", 8)
 # etapa exacta "Contactado" (para el speed-to-lead)
 CONT_ID = next((s["id"] for s in stages if s["name"].strip().lower() == "contactado"), None)
-STL_FIELD_ID = "L1sRC5lB7ndPVEbcD7Q9"   # campo opportunity 'Speed Contactado At' (lo rellena el workflow de GHL)
 
 def pos(o): return POS.get(o.get("pipelineStageId"), -1)
 def is_won(o): return o.get("status") == "won" or o.get("pipelineStageId") == WON_NAME
@@ -176,6 +175,27 @@ def fetch_opps():
 opps = fetch_opps()
 
 def pdt(s): return dt.datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
+
+# ---------- histórico de speed-to-lead (propio del dashboard, hora EXACTA) ----------
+# GHL no guarda historial de etapas y sus campos DATE son día-sin-hora. Así que el dashboard
+# sella la hora exacta (lastStageChangeAt, con segundos) de cada lead que pasa por Contactado y
+# la persiste en speed_history.json → no se pierde cuando el lead avanza. Sin workflow ni campos GHL.
+HIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speed_history.json")
+try: _hist = json.load(open(HIST_PATH))
+except Exception: _hist = {}
+_hist_new = 0
+for _o in opps:                                   # opps = lista completa (antes de filtrar por funnel)
+    if _o.get("pipelineStageId") == CONT_ID:
+        _oid, _ts = _o.get("id"), _o.get("lastStageChangeAt")
+        if _oid and _ts and _oid not in _hist:
+            _hist[_oid] = {"contactado_at": _ts, "created_at": _o.get("createdAt")}
+            _hist_new += 1
+if _hist_new:
+    try:
+        json.dump(_hist, open(HIST_PATH, "w"), ensure_ascii=False, indent=0)
+        sys.stderr.write("speed_history: +%d (total %d)\n" % (_hist_new, len(_hist)))
+    except Exception as e:
+        sys.stderr.write("no pude guardar speed_history: %s\n" % e)
 def inwin(o, a, b):
     c = pdt(o.get("createdAt")); return c is not None and a <= c < b
 
@@ -219,31 +239,20 @@ cur = [o for o in opps if inwin(o, WIN_A, WIN_B)]
 prv = [o for o in opps if inwin(o, PRV_A, WIN_A)]
 F, P = funnel(cur), funnel(prv)
 
-# ---------- SPEED-TO-LEAD (registro → Contactado) ----------
-def _parse_cf_date(v):
-    if v is None or v == "": return None
-    s = str(v)
-    try: return pdt(s if "T" in s else s + "T00:00:00Z")
-    except Exception: pass
-    try:  # epoch (ms o s)
-        n = float(s); n = n / 1000 if n > 1e11 else n
-        return dt.datetime.fromtimestamp(n, dt.timezone.utc)
-    except Exception: return None
+# ---------- SPEED-TO-LEAD (registro → Contactado), hora exacta vía histórico ----------
 def contactado_at(o):
-    for c in (o.get("customFields") or []):            # 1) hora exacta del workflow (si existe)
-        if c.get("id") == STL_FIELD_ID:
-            d = _parse_cf_date(c.get("fieldValue"))
-            if d: return d, "exacto"
-    if CONT_ID and o.get("pipelineStageId") == CONT_ID:  # 2) fallback: aún en Contactado
-        d = pdt(o.get("lastStageChangeAt"))
-        if d: return d, "parcial"
-    return None, None
-_stl = []     # (minutos, fuente)
-for o in cur:
-    ca, src = contactado_at(o); cr = pdt(o.get("createdAt"))
-    if ca and cr and ca >= cr: _stl.append(((ca - cr).total_seconds() / 60.0, src))
-_stl_min = sorted(m for m, _ in _stl)
-_stl_exact = sum(1 for _, s in _stl if s == "exacto")
+    h = _hist.get(o.get("id"))                           # 1) histórico sellado (persiste tras avanzar)
+    if h and h.get("contactado_at"):
+        d = pdt(h["contactado_at"])
+        if d: return d
+    if CONT_ID and o.get("pipelineStageId") == CONT_ID:  # 2) aún en Contactado → hora exacta
+        return pdt(o.get("lastStageChangeAt"))
+    return None
+_stl_min = sorted(
+    (ca - cr).total_seconds() / 60.0
+    for o in cur
+    for ca in [contactado_at(o)] for cr in [pdt(o.get("createdAt"))]
+    if ca and cr and ca >= cr)
 
 # ---------- META (gasto aislado por funnel, a NIVEL DE ANUNCIO) ----------
 # Cada anuncio pertenece a un funnel por su nombre/campaña:
@@ -524,7 +533,6 @@ if _stl_min:
     _b5 = sum(1 for m in _stl_min if m <= 5); _b60 = sum(1 for m in _stl_min if m <= 60)
     _b24 = sum(1 for m in _stl_min if m <= 1440); _bslow = sum(1 for m in _stl_min if m > 1440)
     _scol = "g" if _med <= 60 else ("a" if _med <= 1440 else "r")
-    _cov = ("%d exactos + %d parciales" % (_stl_exact, len(_stl_min) - _stl_exact)) if _stl_exact else ("%d (parcial)" % len(_stl_min))
     H.append('<section id="speed"><h2><span class="num">5</span>Speed-to-Lead · registro → Contactado</h2>'
              '<div class="sub">Tiempo desde que el lead entra (registro) hasta que pasa a <strong>Contactado</strong> <span class="src src-ghl">GHL</span> · objetivo: contactar en &lt; 1 h</div>'
              '<div class="scorecard">'
@@ -534,9 +542,9 @@ if _stl_min:
              '<div class="tile green"><div class="tile-label">≤ 1 h</div><div class="tile-value">' + str(_b60) + '</div><div class="tile-sub">de ' + str(len(_stl_min)) + ' medidos</div></div>'
              '<div class="tile red"><div class="tile-label">&gt; 24 h 🐌</div><div class="tile-value r">' + str(_bslow) + '</div><div class="tile-sub">lead frío</div></div>'
              '</div>'
-             '<div class="sub" style="margin-top:8px">Medidos: <strong>' + _cov + '</strong> de ' + str(F["lead"]) + ' leads. '
-             + ('⚠️ <strong>Parcial</strong>: sin el workflow de GHL solo puedo medir los leads que siguen en <em>Contactado</em> (los que ya avanzaron perdieron la hora). Activa la automatización <code>Speed Contactado At</code> y pasará a ser exacto para todos.' if _stl_exact == 0 else 'Los <em>exactos</em> salen del campo que rellena tu workflow de GHL.') +
-             '</div></section>')
+             '<div class="sub" style="margin-top:8px">Medidos <strong>' + str(len(_stl_min)) + '</strong> de ' + str(F["lead"]) + ' leads, con <strong>hora exacta</strong> (precisión de segundos). '
+             'El dashboard sella la hora de contactado de cada lead y la guarda en su histórico, así que no se pierde cuando el lead avanza. '
+             'La cobertura crece en cada ejecución; un lead que pase por Contactado y avance antes de que el report corra podría no quedar registrado.</div></section>')
 
 # discrepancia
 disc = ""
