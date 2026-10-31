@@ -47,6 +47,7 @@ jobs:
           FUNNEL=VSL    python generate.py && cp index.html _site/vsl.html
           FUNNEL=PLF    python generate.py && cp index.html _site/plf.html
           FUNNEL=SURVEY python generate.py && cp index.html _site/survey.html
+          python generate_reelvanta.py && cp reelvanta.html _site/reelvanta.html
           cp portada.html            _site/index.html
           cp carcasa-mp-vsl-ian.html _site/carcasa.html
 
