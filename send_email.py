@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Envía por correo el ENLACE al report (sin adjuntar HTML), vía Gmail SMTP.
-Credenciales (env o .env): GMAIL_USER, GMAIL_APP_PASSWORD, EMAIL_TO, REPORT_URL
+Envía por correo el ENLACE a un report (sin adjuntar HTML), vía Gmail SMTP.
+Credenciales (env o .env): GMAIL_USER, GMAIL_APP_PASSWORD, REPORT_URL.
+
+EMAIL_KIND controla qué correo se manda:
+  - "panel" (por defecto): panel completo (VSL+PLF+Survey+carcasa) → EMAIL_TO.
+  - "reelvanta": SOLO el report de ReelVanta → REELVANTA_EMAIL_TO.
+REPORT_URL ya debe apuntar a la página correcta (portada o reelvanta.html).
 """
 import os, sys, ssl, smtplib, datetime as dt
 from email.message import EmailMessage
@@ -29,32 +34,54 @@ if not _pwd or _pwd.startswith("PENDIENTE"):
     print("⏭️  Email omitido: falta GMAIL_APP_PASSWORD. El report SÍ se publicó.")
     sys.exit(0)
 
+KIND = os.environ.get("EMAIL_KIND", "panel").strip().lower()
 USER = need("GMAIL_USER")
 PWD  = _pwd
-TO   = need("EMAIL_TO")
 URL  = need("REPORT_URL")
 hoy  = dt.date.today().strftime("%d/%m/%Y")
 
+if KIND == "reelvanta":
+    # Correo aparte, SOLO el pipeline de ReelVanta. Si no hay destinatario, se
+    # omite en verde (no rompe el workflow del panel principal).
+    TO = os.environ.get("REELVANTA_EMAIL_TO", "").strip()
+    if not TO or TO.startswith("PENDIENTE"):
+        print("⏭️  Email ReelVanta omitido: falta REELVANTA_EMAIL_TO.")
+        sys.exit(0)
+    subject   = "🎬 Report ReelVanta — %s" % hoy
+    intro_txt = "Tu report de ReelVanta está actualizado: funnel, coste por anuncio, llamadas agendadas y ventas."
+    intro_html = ('Tu <strong>report de ReelVanta</strong> está actualizado: funnel, '
+                  'coste por anuncio, llamadas agendadas y ventas.')
+    btn_label = "Abrir report ReelVanta →"
+else:
+    TO = need("EMAIL_TO")
+    subject   = "📊 Panel Captación Ads — %s" % hoy
+    intro_txt = "Tu panel de reports está actualizado: Funnels VSL + PLF + Survey (aislados) y la carcasa de referencia."
+    intro_html = ('Tu <strong>panel de reports</strong> está actualizado: Funnels '
+                  '<strong>VSL</strong> + <strong>PLF</strong> + <strong>Survey</strong> '
+                  '(aislados) y la carcasa de referencia.')
+    btn_label = "Abrir panel →"
+
 msg = EmailMessage()
-msg["Subject"] = "📊 Panel Captación Ads — %s" % hoy
+msg["Subject"] = subject
 msg["From"] = USER
 msg["To"] = TO
 msg.set_content(
     "Hola Ian,\n\n"
-    "Tu panel de reports está actualizado: Funnels VSL + PLF + Survey (aislados) y la carcasa de referencia.\n\n"
+    "%s\n\n"
     "👉 Ábrelo aquí: %s\n\n"
     "Datos reales META + GHL, nombres anonimizados. Se regenera automáticamente cada 3 días.\n\n"
-    "— Automatización Captación Ads\n" % URL
+    "— Automatización Captación Ads\n" % (intro_txt, URL)
 )
 # versión HTML con botón (sigue siendo solo el enlace, sin adjuntar el report)
 msg.add_alternative(
     '<div style="font-family:-apple-system,Segoe UI,sans-serif;font-size:15px;color:#1a1a1a">'
     '<p>Hola Ian,</p>'
-    '<p>Tu <strong>panel de reports</strong> está actualizado: Funnels <strong>VSL</strong> + <strong>PLF</strong> + <strong>Survey</strong> (aislados) y la carcasa de referencia.</p>'
+    '<p>%s</p>'
     '<p><a href="%s" style="background:#d4af37;color:#0a0a0a;text-decoration:none;'
-    'padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">Abrir panel →</a></p>'
+    'padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">%s</a></p>'
     '<p style="color:#666;font-size:13px">O copia el enlace: <a href="%s">%s</a><br>'
-    'Datos reales, nombres anonimizados. Se regenera cada 3 días.</p></div>' % (URL, URL, URL),
+    'Datos reales, nombres anonimizados. Se regenera cada 3 días.</p></div>'
+    % (intro_html, URL, btn_label, URL, URL),
     subtype="html",
 )
 
@@ -62,4 +89,4 @@ ctx = ssl.create_default_context()
 with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx) as s:
     s.login(USER, PWD)
     s.send_message(msg)
-print("Email enviado a %s con enlace %s" % (TO, URL))
+print("Email (%s) enviado a %s con enlace %s" % (KIND, TO, URL))

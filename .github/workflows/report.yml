@@ -81,10 +81,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Enviar email con el enlace
+      - name: Enviar email con el enlace al panel
         env:
           GMAIL_USER:         ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           EMAIL_TO:           ${{ secrets.EMAIL_TO }}
           REPORT_URL:         ${{ needs.build-and-deploy.outputs.page_url }}
-        run: python send_email.py
+        run: EMAIL_KIND=panel python send_email.py
+
+      - name: Enviar email SOLO ReelVanta a su buzón
+        env:
+          GMAIL_USER:          ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD:  ${{ secrets.GMAIL_APP_PASSWORD }}
+          REELVANTA_EMAIL_TO:  ${{ secrets.REELVANTA_EMAIL_TO }}
+          REPORT_URL:          ${{ needs.build-and-deploy.outputs.page_url }}reelvanta.html
+        run: EMAIL_KIND=reelvanta python send_email.py
